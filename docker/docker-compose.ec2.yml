@@ -1,0 +1,34 @@
+# Overlay for a cloud host such as AWS EC2: `make up-ec2` (= docker-compose.yml + this file). Needs Docker Compose >= 2.24.
+#
+# On a laptop the base file publishes Postgres (5432), Langfuse (3000) and the API (8000) on every interface. On a server
+# with a public IP that would put the database and the API on the internet, and Docker's published ports bypass the
+# host firewall (ufw). So here:
+#   * Postgres, Langfuse and the API listen on the host's loopback only: reach them through an SSH tunnel;
+#   * the UI listens on loopback too, unless UI_BIND=0.0.0.0 is set in .env, for a demo to IP addresses the EC2
+#     security group allows. The UI holds a human API key and has no login, so never open it to 0.0.0.0/0;
+#   * Langfuse's signing secrets come from .env instead of the base file's "change-me";
+#   * every service restarts on failure and after an instance reboot.
+services:
+  db:
+    restart: unless-stopped
+    ports: !override ["127.0.0.1:5432:5432"]
+
+  langfuse-db:
+    restart: unless-stopped
+
+  langfuse:
+    restart: unless-stopped
+    environment:
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?set LANGFUSE_NEXTAUTH_SECRET in .env (openssl rand -hex 32)}
+      SALT: ${LANGFUSE_SALT:?set LANGFUSE_SALT in .env (openssl rand -hex 32)}
+    ports: !override ["127.0.0.1:3000:3000"]
+
+  api:
+    restart: unless-stopped
+    environment:
+      AGENT_ARCH: ${AGENT_ARCH:-single}          # D44: the single agent is the one deployed
+    ports: !override ["127.0.0.1:8000:8000"]
+
+  ui:
+    restart: unless-stopped
+    ports: !override ["${UI_BIND:-127.0.0.1}:8501:8501"]

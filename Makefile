@@ -1,5 +1,5 @@
 
-.PHONY: migrate api ui ui-mock test-safety chat-eval chat-eval-mock chat-eval-test chat-eval-set test-chat chat-kb
+.PHONY: migrate api ui ui-mock test-safety chat-eval chat-eval-mock chat-eval-test chat-eval-set test-chat chat-kb up-ec2 down-ec2 embeddings-ec2 smoke-ec2 chat-kb-ec2 logs-ec2 ps-ec2
 .PHONY: setup ground-truth policies synthetic ingest corpus eval-set grade retrieval-baseline prompt-baseline prompt-baseline-mock index chunking-experiments retrieval-eval test schemas up down
 
 setup:            ## create venv and install dependencies
@@ -55,9 +55,6 @@ migrate:          ## step 2.6: apply Alembic migrations (SQLite store file, or P
 
 api:              ## step 2.6: run the API locally (http://localhost:8000/docs)
 	uvicorn app.api.main:app --reload
-
-ui-mock:          ## step 2.7: regenerate app/ui/mock_review.json from the tools
-	python -m scripts.make_ui_mock
 
 ui:               ## step 3.7: Streamlit UI (live API with API_KEY, or the mock JSON)
 	streamlit run app/ui/streamlit_app.py
@@ -124,3 +121,28 @@ test-chat:        ## D45: chat assistant tests (grounding checks, routing, portf
 
 chat-kb:          ## D45: what the chat's documentation knowledge base holds (files, chunks, skipped files)
 	python -m app.chatbot.knowledge
+
+# ---- AWS EC2 / any cloud host (docs/deploy_aws_ec2.md): same stack as `make up`; Postgres, the API and Langfuse listen on
+# the host's loopback only (SSH tunnel), the UI per UI_BIND in .env. Needs docker/docker-compose.ec2.yml and Compose >= 2.24.
+EC2_COMPOSE = docker compose -f docker/docker-compose.yml -f docker/docker-compose.ec2.yml --env-file .env
+
+up-ec2:           ## EC2: build and start the stack (rebuild after every git pull)
+	$(EC2_COMPOSE) up -d --build
+
+down-ec2:         ## EC2: stop the stack (data and traces stay in the Docker volumes)
+	$(EC2_COMPOSE) down
+
+ps-ec2:           ## EC2: container status (wait for api: healthy)
+	$(EC2_COMPOSE) ps
+
+embeddings-ec2:   ## EC2, first deploy only: copy the stored bge-small vectors from store.sqlite into Postgres (hybrid search)
+	$(EC2_COMPOSE) exec api python -m scripts.copy_embeddings --sqlite /app/data/processed/store.sqlite
+
+smoke-ec2:        ## EC2: the one-command smoke test inside the API container (tool-failure check skipped)
+	$(EC2_COMPOSE) exec api python -m scripts.smoke_test --api http://localhost:8000 --ui http://ui:8501 --no-fault
+
+chat-kb-ec2:      ## EC2: what the chat's documentation knowledge base holds inside the API container (should not be empty)
+	$(EC2_COMPOSE) exec api python -m app.chatbot.knowledge
+
+logs-ec2:         ## EC2: follow the API logs
+	$(EC2_COMPOSE) logs -f --tail=100 api
