@@ -26,7 +26,7 @@ in the SSH session on the instance.
 | Region | Asia Pacific (Mumbai) ap-south-1, or the one nearest the team |
 | AMI | Ubuntu Server 24.04 LTS, 64-bit (x86) |
 | Instance type | t3.large (2 vCPU, 8 GB). t3.medium (4 GB) runs it but is tight with two Postgres servers and Langfuse |
-| Key pair | Create new: `pvrc-key`, RSA, .pem. Save the file in the project folder's parent, never inside the repo |
+| Key pair | Create new: `pvrc-key`, RSA, .pem. Never save it inside the repository (`.pem` is not git-ignored) |
 | Network | default VPC, public subnet, auto-assign public IP: enabled |
 | Security group, inbound | SSH (TCP 22) from **My IP** only. Nothing else (step 10 optionally adds the UI for named IPs) |
 | Storage | 30 GiB gp3 |
@@ -36,10 +36,22 @@ Allocate → Associate with the instance, so the address survives a stop and sta
 
 ## 2. Connect (laptop)
 
+Keep the key in `$HOME\.ssh` (outside the repository, and outside OneDrive-synced folders) and make it readable by you
+only, or ssh refuses it with "bad permissions" (`chmod 400` is the Linux equivalent; it does not work in PowerShell).
+Quote paths that contain spaces:
 ```powershell
-icacls .\pvrc-key.pem /inheritance:r /grant:r "$($env:USERNAME):R"     # ssh refuses a key others can read
-ssh -i .\pvrc-key.pem ubuntu@<public-ip>
+mkdir $HOME\.ssh -Force
+Move-Item "$HOME\Downloads\pvrc-key.pem" "$HOME\.ssh\pvrc-key.pem"
+cd $HOME\.ssh
+icacls .\pvrc-key.pem /reset
+icacls .\pvrc-key.pem /inheritance:r
+icacls .\pvrc-key.pem /grant:r "$(whoami):R"
+icacls .\pvrc-key.pem /remove "Users" "Authenticated Users" "Everyone"
+ssh -i $HOME\.ssh\pvrc-key.pem ubuntu@<public-ip>
 ```
+A "Connection timed out" means the security group does not allow your current IP (it changes on many home and mobile
+connections): edit the SSH inbound rule's source to My IP. Run the later `scp` and tunnel commands in PowerShell from
+the project folder.
 Type `yes` to the fingerprint question the first time.
 
 ## 3. Install Docker, Compose, make and git (EC2)
@@ -67,18 +79,19 @@ is not on the default one: `git switch <branch>`.
 
 **Laptop:**
 ```powershell
-scp -i ..\pvrc-key.pem .env ubuntu@<public-ip>:~/pvrc/.env
-scp -i ..\pvrc-key.pem -r certs ubuntu@<public-ip>:~/pvrc/
-ssh -i ..\pvrc-key.pem ubuntu@<public-ip> "mkdir -p ~/pvrc/data/processed"
-scp -i ..\pvrc-key.pem data\processed\corpus_v1.jsonl data\processed\store.sqlite ubuntu@<public-ip>:~/pvrc/data/processed/
-scp -i ..\pvrc-key.pem -r data\processed\embeddings ubuntu@<public-ip>:~/pvrc/data/processed/
+scp -i $HOME\.ssh\pvrc-key.pem .env ubuntu@<public-ip>:~/pvrc/.env
+scp -i $HOME\.ssh\pvrc-key.pem -r certs ubuntu@<public-ip>:~/pvrc/
+ssh -i $HOME\.ssh\pvrc-key.pem ubuntu@<public-ip> "mkdir -p ~/pvrc/data/processed"
+scp -i $HOME\.ssh\pvrc-key.pem data\processed\corpus_v1.jsonl data\processed\store.sqlite ubuntu@<public-ip>:~/pvrc/data/processed/
+scp -i $HOME\.ssh\pvrc-key.pem -r data\processed\embeddings ubuntu@<public-ip>:~/pvrc/data/processed/
 ```
 If the chat uses any other generated file that git ignores (an index or cache under `data/`), copy it the same way.
 
 **EC2:** lock the secrets down, then make three random values:
 ```bash
 cd ~/pvrc
-chmod 600 .env && chmod -R go-rwx certs
+chmod 600 .env
+chmod -R a+rX certs      # CA certificates are public; the API container (another user) must be able to read them
 openssl rand -hex 32; openssl rand -hex 32; openssl rand -hex 32
 nano .env
 ```
@@ -97,12 +110,14 @@ Keep `API_KEYS`, `API_KEY` (the UI's human key), the endpoint URLs and keys, and
 step 9: this Langfuse is new and has no keys yet. Save with Ctrl+O, Enter, Ctrl+X.
 
 Last, let the API container write where it needs to. It runs as uid 10001, and on Linux (unlike Docker Desktop) it cannot
-write into folders the `ubuntu` user owns: traces and the token ledger in `observability/`, the response cache in
-`data/processed/llm_cache/`:
+write into folders the `ubuntu` user owns: traces and the token ledger in `observability/`, and `data/processed/` (the
+response cache, and the side files SQLite creates even when `make embeddings-ec2` only reads `store.sqlite`):
 ```bash
 mkdir -p observability data/processed/llm_cache
-sudo chown -R 10001:10001 observability data/processed/llm_cache
+sudo chown -R 10001:10001 observability data/processed
 ```
+To `scp` new files into `data/processed` later, hand it back first (`sudo chown -R ubuntu:ubuntu data/processed`) and
+return it afterwards (`sudo chown -R 10001:10001 data/processed`).
 
 ## 6. Check the course endpoints are reachable from AWS (EC2)
 
@@ -141,7 +156,7 @@ If something fails: `make logs-ec2` (Ctrl+C to leave).
 ## 8. Open the UI through an SSH tunnel (laptop)
 
 ```powershell
-ssh -i ..\pvrc-key.pem -N -L 8501:localhost:8501 -L 3000:localhost:3000 -L 8000:localhost:8000 ubuntu@<public-ip>
+ssh -i $HOME\.ssh\pvrc-key.pem -N -L 8501:localhost:8501 -L 3000:localhost:3000 -L 8000:localhost:8000 ubuntu@<public-ip>
 ```
 Leave the window open (it prints nothing), then browse to:
 - http://localhost:8501: the UI. Run one of the demo paths, then ask a question in the chat (Ask the Copilot).
@@ -162,10 +177,57 @@ The UI has no login and holds a human API key that can record approval decisions
 - **EC2:** set `UI_BIND=0.0.0.0` in `.env`, then `make up-ec2`.
 - Browse to `http://<public-ip>:8501`.
 
-Never use source 0.0.0.0/0. For anything beyond a demo, put the UI behind HTTPS and a login, for example an Application
-Load Balancer with Cognito, or a reverse proxy with authentication.
+Never use source 0.0.0.0/0 for port 8501. To let anyone open the app, use step 11 instead.
 
-## 11. Update, stop, clean up
+## 11. A public HTTPS link that opens from anywhere
+
+Caddy, a small web server on the instance, answers on `https://<your-name>.duckdns.org`, gets a free Let's Encrypt
+certificate by itself, asks for a username and password, and only then passes the request to the UI on
+`127.0.0.1:8501`. Port 8501, the API, Langfuse and Postgres stay closed to the internet.
+
+1. **Fixed address.** Console: EC2 → Elastic IPs → Allocate Elastic IP address → Actions → Associate → your instance.
+   Use this IP from now on (SSH, scp, the tunnel); it no longer changes on stop and start.
+2. **Free domain name.** Sign in at https://www.duckdns.org (GitHub or Google account), add a subdomain, for example
+   `pvrc-demo`, set its **current ip** to the Elastic IP and click **update ip**. Check from the laptop:
+   `Resolve-DnsName pvrc-demo.duckdns.org` must show the Elastic IP.
+3. **Security group.** Add inbound rules **HTTP (80)** and **HTTPS (443)**, source **0.0.0.0/0** (Anywhere-IPv4).
+   Let's Encrypt must reach port 80 to issue the certificate; Caddy redirects it to HTTPS. Remove any port-8501 rule
+   from step 10, and keep SSH limited to My IP.
+4. **EC2:** keep the UI on loopback (`UI_BIND=127.0.0.1` in `.env`; if you changed it, run `make up-ec2`).
+5. **EC2: install Caddy** (official repository):
+   ```bash
+   sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
+   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+   sudo apt-get update && sudo apt-get install -y caddy
+   caddy version                     # 2.8 or newer
+   caddy hash-password               # type the password twice; copy the $2a$... line it prints
+   ```
+6. **EC2: configure it.** `sudo nano /etc/caddy/Caddyfile`, delete everything and paste (your subdomain, the hash):
+   ```
+   pvrc-demo.duckdns.org {
+       basic_auth {
+           pvrc <paste the $2a$... hash>
+       }
+       reverse_proxy 127.0.0.1:8501
+   }
+   ```
+   Then:
+   ```bash
+   sudo systemctl reload caddy
+   sudo journalctl -u caddy --no-pager -n 40 | grep -iE "certificate obtained|error"
+   ```
+   "certificate obtained successfully" means it works. An error about the challenge almost always means step 2 (the
+   name does not point at the Elastic IP yet; DNS can take a few minutes) or step 3 (port 80 closed).
+7. **Open** `https://pvrc-demo.duckdns.org` from any browser or phone, sign in as `pvrc` with your password.
+
+Caddy starts on boot and renews the certificate by itself. Anyone with the password can use the whole UI, including
+recording approval decisions with the UI's human key: share it only with the team and the evaluators, and change it
+after the evaluation (`caddy hash-password`, edit the Caddyfile, `sudo systemctl reload caddy`). This is fine for a demo
+on synthetic data; real vendor data would need a login per person (for example an Application Load Balancer with
+Cognito) so that decisions are recorded under each approver's own name.
+
+## 12. Update, stop, clean up
 
 | Task | Command |
 |---|---|
@@ -173,4 +235,4 @@ Load Balancer with Cognito, or a reverse proxy with authentication.
 | Changed `.env` | **EC2:** `make up-ec2` (recreates the containers that use it) |
 | Stop the stack | **EC2:** `make down-ec2` (data, traces and Langfuse stay in the Docker volumes) |
 | Stop paying for compute | Console: Instance state → Stop. Only the disk is billed while stopped. On start the stack comes back by itself (`restart: unless-stopped`); the public IP changes unless you attached an Elastic IP |
-| End of project | Terminate the instance, delete its volume if kept, release any Elastic IP, delete the key pair |
+| End of project | Terminate the instance, delete its volume if kept, release the Elastic IP (an unattached one is billed), delete the DuckDNS subdomain and the key pair |
