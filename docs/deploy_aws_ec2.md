@@ -227,6 +227,34 @@ after the evaluation (`caddy hash-password`, edit the Caddyfile, `sudo systemctl
 on synthetic data; real vendor data would need a login per person (for example an Application Load Balancer with
 Cognito) so that decisions are recorded under each approver's own name.
 
+### 11b. Optional: the Langfuse dashboard on its own HTTPS link
+
+Without this step Langfuse stays reachable only through the SSH tunnel (step 8), which is the safest choice. Langfuse has
+its own email-and-password login, so it can also get a public address. The API keeps sending traces to Langfuse inside
+Docker (`http://langfuse:3000`); nothing changes for it.
+
+1. **Accounts first.** Through the tunnel, make sure everyone who needs the dashboard has an account (sign up, or invite
+   them from the project settings): step 3 closes self sign-up.
+2. **Second DuckDNS subdomain**, for example `pvrc-traces`, pointing at the same Elastic IP.
+3. **EC2: `.env`** — add, with your subdomain:
+   ```
+   LANGFUSE_URL=https://pvrc-traces.duckdns.org
+   LANGFUSE_DISABLE_SIGNUP=true
+   ```
+   then `make up-ec2`. `LANGFUSE_URL` is where Langfuse sends the browser after login; leave `LANGFUSE_HOST` as it is.
+4. **EC2: Caddy.** `sudo nano /etc/caddy/Caddyfile`, add a second block under the first:
+   ```
+   pvrc-traces.duckdns.org {
+       reverse_proxy 127.0.0.1:3000
+   }
+   ```
+   then `sudo systemctl reload caddy` and check the log for "certificate obtained successfully".
+5. **Open** `https://pvrc-traces.duckdns.org` and sign in with your Langfuse account.
+
+The traces hold every prompt and answer, so use strong passwords. For a second lock, add the same `basic_auth { ... }`
+block as the UI's inside this site block. With `LANGFUSE_URL` set, logging in through the tunnel (`localhost:3000`)
+also redirects to the public address; that is expected.
+
 ## 12. Update, stop, clean up
 
 | Task | Command |

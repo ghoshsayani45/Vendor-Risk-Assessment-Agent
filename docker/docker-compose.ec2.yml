@@ -21,6 +21,9 @@ services:
     environment:
       NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?set LANGFUSE_NEXTAUTH_SECRET in .env (openssl rand -hex 32)}
       SALT: ${LANGFUSE_SALT:?set LANGFUSE_SALT in .env (openssl rand -hex 32)}
+      # public dashboard behind Caddy (docs/deploy_aws_ec2.md step 11b): its https address, and no self sign-up
+      NEXTAUTH_URL: ${LANGFUSE_URL:-http://localhost:3000}
+      AUTH_DISABLE_SIGNUP: ${LANGFUSE_DISABLE_SIGNUP:-false}
     ports: !override ["127.0.0.1:3000:3000"]
 
   api:
